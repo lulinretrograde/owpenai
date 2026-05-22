@@ -51,73 +51,61 @@ def local_path(url_path):
     return docs / clean
 
 
-def abs_url(path):
-    if path.startswith("http"):
-        return path
-    return BASE + path
+def to_abs(url, base=None):
+    """Always return a full https:// URL."""
+    if url.startswith("http"):
+        return url.split("?")[0]
+    if url.startswith("/"):
+        return BASE + url.split("?")[0]
+    if base:
+        return urllib.parse.urljoin(base, url).split("?")[0]
+    return BASE + "/" + url.split("?")[0]
 
 
-def url_to_local(url):
-    """Map any URL to a local docs/ path."""
-    p = urllib.parse.urlparse(url)
-    # keep host in path so cdn.openai.com and openai.com don't collide
-    if p.netloc and p.netloc != "openai.com" and p.netloc != "www.openai.com":
-        return docs / p.netloc / p.path.lstrip("/").split("?")[0]
-    return docs / p.path.lstrip("/").split("?")[0]
+def url_to_local(abs_url):
+    p = urllib.parse.urlparse(abs_url)
+    if p.netloc not in ("openai.com", "www.openai.com"):
+        return docs / p.netloc / p.path.lstrip("/")
+    return docs / p.path.lstrip("/")
 
 
-def local_web_path(url):
-    """The URL path we'll rewrite to in HTML/CSS (relative to docs/)."""
-    p = urllib.parse.urlparse(url)
-    if p.netloc and p.netloc != "openai.com" and p.netloc != "www.openai.com":
-        return "/" + p.netloc + p.path.split("?")[0]
-    return p.path.split("?")[0]
+def local_web_path(abs_url):
+    p = urllib.parse.urlparse(abs_url)
+    if p.netloc not in ("openai.com", "www.openai.com"):
+        return "/" + p.netloc + p.path
+    return p.path
 
 
 def download_asset(url, css_base=None):
-    # resolve relative URLs from CSS
-    if css_base and not url.startswith("http") and not url.startswith("/"):
-        url = urllib.parse.urljoin(css_base, url)
-
-    url = url.split("?")[0]
-    if url in downloaded:
+    abs_u = to_abs(url, css_base)
+    if abs_u in downloaded:
         return
-    downloaded.add(url)
+    downloaded.add(abs_u)
 
-    dest = url_to_local(url)
+    dest = url_to_local(abs_u)
     if dest.exists():
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    data = fetch(abs_url(url) if not url.startswith("http") else url, binary=True)
+    data = fetch(abs_u, binary=True)
     if not data:
         return
     dest.write_bytes(data)
 
-    if url.endswith(".css"):
+    if abs_u.endswith(".css"):
         css_text = data.decode("utf-8", errors="ignore")
-        p = urllib.parse.urlparse(url)
-        base = p.scheme + "://" + p.netloc + p.path.rsplit("/", 1)[0] + "/"
+        p = urllib.parse.urlparse(abs_u)
+        this_base = p.scheme + "://" + p.netloc + p.path.rsplit("/", 1)[0] + "/"
 
-        refs = re.findall(r'url\(["\']?([^"\')\s]+)["\']?\)', css_text)
-        for ref in refs:
-            clean = ref.split("?")[0]
-            if clean.startswith("data:"):
-                continue
-            download_asset(clean, css_base=base)
+        for ref in re.findall(r'url\(["\']?([^"\')\s]+)["\']?\)', css_text):
+            if not ref.startswith("data:"):
+                download_asset(ref, css_base=this_base)
 
         def rewrite_ref(m):
-            ref = m.group(1).split("?")[0]
+            ref = m.group(1)
             if ref.startswith("data:"):
                 return m.group(0)
-            if ref.startswith("http"):
-                abs_ref = ref
-            elif ref.startswith("/"):
-                abs_ref = BASE + ref
-            else:
-                abs_ref = urllib.parse.urljoin(base, ref)
-            local = local_web_path(abs_ref)
-            return f'url({GH_BASE}{local})'
+            return f'url({GH_BASE}{local_web_path(to_abs(ref, this_base))})'
 
         css_text = re.sub(r'url\(["\']?([^"\')\s]+)["\']?\)', rewrite_ref, css_text)
         dest.write_text(css_text, encoding="utf-8")
@@ -127,16 +115,14 @@ def fix_asset_links(soup):
     for tag in soup.find_all("link", href=True):
         href = tag["href"]
         if href.startswith("/_next/"):
-            clean = href.split("?")[0]
-            download_asset(clean)
-            tag["href"] = GH_BASE + local_web_path(clean)
+            download_asset(href)
+            tag["href"] = GH_BASE + local_web_path(to_abs(href))
 
     for tag in soup.find_all(src=True):
         src = tag["src"]
         if src.startswith("/_next/"):
-            clean = src.split("?")[0]
-            download_asset(clean)
-            tag["src"] = GH_BASE + local_web_path(clean)
+            download_asset(src)
+            tag["src"] = GH_BASE + local_web_path(to_abs(src))
 
 
 def fix_page_links(soup):
