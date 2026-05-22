@@ -15,6 +15,7 @@ HEADERS = {
 }
 
 BASE = "https://openai.com"
+GH_DOMAIN = "https://lulinretrograde.github.io"
 GH_BASE = "/owpenai"
 
 PAGES = [
@@ -26,6 +27,10 @@ PAGES = [
     "/sora",
     "/pricing",
     "/careers",
+    "/news",
+    "/enterprise",
+    "/product",
+    "/stories",
 ]
 
 SKIP_TAGS = {"script", "style", "code", "pre", "noscript"}
@@ -46,13 +51,7 @@ def fetch(url, binary=False):
         return None
 
 
-def local_path(url_path):
-    clean = url_path.split("?")[0].lstrip("/")
-    return docs / clean
-
-
 def to_abs(url, base=None):
-    """Always return a full https:// URL."""
     if url.startswith("http"):
         return url.split("?")[0]
     if url.startswith("/"):
@@ -74,6 +73,10 @@ def local_web_path(abs_url):
     if p.netloc not in ("openai.com", "www.openai.com"):
         return "/" + p.netloc + p.path
     return p.path
+
+
+def local_abs(path):
+    return GH_DOMAIN + GH_BASE + path
 
 
 def download_asset(url, css_base=None):
@@ -105,27 +108,76 @@ def download_asset(url, css_base=None):
             ref = m.group(1)
             if ref.startswith("data:"):
                 return m.group(0)
-            return f'url({GH_BASE}{local_web_path(to_abs(ref, this_base))})'
+            return f'url({local_abs(local_web_path(to_abs(ref, this_base)))})'
 
         css_text = re.sub(r'url\(["\']?([^"\')\s]+)["\']?\)', rewrite_ref, css_text)
         dest.write_text(css_text, encoding="utf-8")
+
+
+LOCAL_PAGES = set(PAGES)
+
+
+def unwrap_nextjs_image(src):
+    if "/_next/image" in src:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(src).query)
+        if "url" in qs:
+            return qs["url"][0]
+    return src
+
+
+def fix_srcset(srcset):
+    out = []
+    for part in srcset.split(","):
+        part = part.strip()
+        pieces = part.split()
+        if pieces:
+            pieces[0] = unwrap_nextjs_image(pieces[0])
+        out.append(" ".join(pieces))
+    return ", ".join(out)
 
 
 def fix_asset_links(soup):
     for tag in soup.find_all("link", href=True):
         href = tag["href"]
         if href.startswith("/_next/"):
-            download_asset(href)
-            tag["href"] = GH_BASE + local_web_path(to_abs(href))
+            clean = href.split("?")[0]
+            download_asset(clean)
+            tag["href"] = local_abs(local_web_path(to_abs(clean)))
 
     for tag in soup.find_all(src=True):
         src = tag["src"]
-        if src.startswith("/_next/"):
-            download_asset(src)
-            tag["src"] = GH_BASE + local_web_path(to_abs(src))
+        if "/_next/image" in src:
+            tag["src"] = unwrap_nextjs_image(src)
+        elif src.startswith("/_next/"):
+            clean = src.split("?")[0]
+            download_asset(clean)
+            tag["src"] = local_abs(local_web_path(to_abs(clean)))
+
+    for tag in soup.find_all(srcset=True):
+        tag["srcset"] = fix_srcset(tag["srcset"])
+
+    for tag in soup.find_all(imagesrcset=True):
+        tag["imagesrcset"] = fix_srcset(tag["imagesrcset"])
+
+    for tag in soup.find_all(True, {"data-src": True}):
+        tag["data-src"] = unwrap_nextjs_image(tag["data-src"])
 
 
-LOCAL_PAGES = set(PAGES)
+def fix_inline_styles(soup):
+    for tag in soup.find_all(style=True):
+        style = tag["style"]
+        if "/_next/" not in style:
+            continue
+
+        def rewrite(m):
+            url = m.group(1).split("?")[0]
+            if url.startswith("/_next/"):
+                download_asset(url)
+                return f'url({local_abs(local_web_path(to_abs(url)))})'
+            return m.group(0)
+
+        tag["style"] = re.sub(r'url\(["\']?(/_next/[^"\')\s?]+)["\']?\)', rewrite, style)
+
 
 def fix_page_links(soup):
     for tag in soup.find_all("a", href=True):
@@ -134,9 +186,23 @@ def fix_page_links(soup):
         if p.netloc in ("", "openai.com", "www.openai.com"):
             path = p.path.rstrip("/") or "/"
             if path in LOCAL_PAGES:
-                tag["href"] = GH_BASE + ("/" if path == "/" else path + "/")
-            else:
-                tag["href"] = "https://openai.com" + path
+                tag["href"] = local_abs("/" if path == "/" else path + "/")
+
+
+def add_base_tag(soup):
+    head = soup.find("head")
+    if not head:
+        return
+    base = soup.new_tag("base")
+    base["href"] = BASE + "/"
+    head.insert(0, base)
+
+    for tag in soup.find_all("link", rel=lambda r: r and any(x in r for x in ["icon", "shortcut"])):
+        tag.decompose()
+    favicon = soup.new_tag("link")
+    favicon["rel"] = "icon"
+    favicon["href"] = BASE + "/favicon.ico"
+    head.append(favicon)
 
 
 def uwuify_tree(soup):
@@ -169,7 +235,9 @@ def build_page(path):
         tag.decompose()
 
     fix_asset_links(soup)
+    fix_inline_styles(soup)
     fix_page_links(soup)
+    add_base_tag(soup)
     uwuify_tree(soup)
 
     page_path(path).write_text(str(soup), encoding="utf-8")
