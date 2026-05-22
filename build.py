@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import re
 import time
 import urllib.parse
@@ -34,6 +35,9 @@ PAGES = [
 ]
 
 SKIP_TAGS = {"script", "style", "code", "pre", "noscript"}
+
+ANALYTICS = ["googletagmanager", "google-analytics", "segment.io",
+              "amplitude", "hotjar", "clarity.ms", "intercom", "sentry"]
 
 docs = Path("docs")
 docs.mkdir(exist_ok=True)
@@ -93,7 +97,6 @@ def download_asset(url, css_base=None):
     data = fetch(abs_u, binary=True)
     if not data:
         return
-    dest.write_bytes(data)
 
     if abs_u.endswith(".css"):
         css_text = data.decode("utf-8", errors="ignore")
@@ -112,6 +115,30 @@ def download_asset(url, css_base=None):
 
         css_text = re.sub(r'url\(["\']?([^"\')\s]+)["\']?\)', rewrite_ref, css_text)
         dest.write_text(css_text, encoding="utf-8")
+    else:
+        dest.write_bytes(data)
+
+
+def download_js(path):
+    abs_u = to_abs(path)
+    if abs_u in downloaded:
+        return
+    downloaded.add(abs_u)
+
+    dest = url_to_local(abs_u)
+    if dest.exists():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    data = fetch(abs_u, binary=True)
+    if not data:
+        return
+
+    js = data.decode("utf-8", errors="ignore")
+    full_next = GH_DOMAIN + GH_BASE + "/_next/"
+    js = js.replace('"/_next/"', f'"{full_next}"')
+    js = js.replace("'/_next/'", f"'{full_next}'")
+    dest.write_text(js, encoding="utf-8")
 
 
 LOCAL_PAGES = set(PAGES)
@@ -148,7 +175,7 @@ def fix_asset_links(soup):
         src = tag["src"]
         if "/_next/image" in src:
             tag["src"] = unwrap_nextjs_image(src)
-        elif src.startswith("/_next/"):
+        elif src.startswith("/_next/") and tag.name != "script":
             clean = src.split("?")[0]
             download_asset(clean)
             tag["src"] = local_abs(local_web_path(to_abs(clean)))
@@ -179,6 +206,33 @@ def fix_inline_styles(soup):
         tag["style"] = re.sub(r'url\(["\']?(/_next/[^"\')\s?]+)["\']?\)', rewrite, style)
 
 
+def fix_scripts(soup):
+    for tag in list(soup.find_all("script")):
+        src = tag.get("src", "")
+
+        if any(d in src for d in ANALYTICS):
+            tag.decompose()
+            continue
+
+        if src.startswith("/_next/"):
+            clean = src.split("?")[0]
+            download_js(clean)
+            tag["src"] = local_abs(local_web_path(to_abs(clean)))
+            continue
+
+        content = tag.string or ""
+        if "__NEXT_DATA__" in content:
+            try:
+                match = re.search(r'=\s*(\{.+\})\s*$', content.strip(), re.DOTALL)
+                if match:
+                    data = json.loads(match.group(1))
+                    data["assetPrefix"] = GH_DOMAIN + GH_BASE
+                    tag.clear()
+                    tag.append(f'self.__NEXT_DATA__={json.dumps(data)}')
+            except Exception:
+                pass
+
+
 def fix_page_links(soup):
     for tag in soup.find_all("a", href=True):
         href = tag["href"]
@@ -203,6 +257,53 @@ def add_base_tag(soup):
     favicon["rel"] = "icon"
     favicon["href"] = BASE + "/favicon.ico"
     head.append(favicon)
+
+
+def inject_uwuify_js(soup):
+    body = soup.find("body")
+    if not body:
+        return
+    script = soup.new_tag("script")
+    script.string = r"""
+(function(){
+  var faces=["(・`ω´・)",";;w;;","owo","UwU",">w<","^w^","nyaa~~",":3","mya","uwu"];
+  var skip=new Set(["SCRIPT","STYLE","CODE","PRE","NOSCRIPT","INPUT","TEXTAREA","SELECT"]);
+  function uwuify(t){
+    t=t.replace(/r/g,"w").replace(/R/g,"W").replace(/l/g,"w").replace(/L/g,"W");
+    t=t.replace(/[Tt][Hh]/g,function(m){return m[0]==="T"?"D":"d"});
+    t=t.replace(/n([aeiouAEIOU])/g,"ny$1").replace(/N([aeiou])/g,"Ny$1");
+    t=t.replace(/ove/g,"uv").replace(/Ove/g,"Uv");
+    if(Math.random()<0.35) t=t.replace(/[.!?](?=\s|$)/g,function(m){
+      return m+" "+faces[Math.floor(Math.random()*faces.length)];
+    });
+    return t;
+  }
+  var done=new WeakSet();
+  function run(){
+    var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);
+    var n;
+    while((n=w.nextNode())){
+      if(done.has(n))continue;
+      var p=n.parentElement;
+      if(!p||skip.has(p.tagName))continue;
+      if(!n.textContent.trim())continue;
+      done.add(n);
+      n.textContent=uwuify(n.textContent);
+    }
+  }
+  var busy=false;
+  var obs=new MutationObserver(function(){
+    if(busy)return;
+    busy=true;
+    setTimeout(function(){run();busy=false;},80);
+  });
+  document.addEventListener("DOMContentLoaded",function(){
+    run();
+    obs.observe(document.body,{childList:true,subtree:true});
+  });
+})();
+"""
+    body.append(script)
 
 
 def uwuify_tree(soup):
@@ -231,14 +332,13 @@ def build_page(path):
 
     soup = BeautifulSoup(html, "lxml")
 
-    for tag in soup.find_all("script"):
-        tag.decompose()
-
+    fix_scripts(soup)
     fix_asset_links(soup)
     fix_inline_styles(soup)
     fix_page_links(soup)
     add_base_tag(soup)
     uwuify_tree(soup)
+    inject_uwuify_js(soup)
 
     page_path(path).write_text(str(soup), encoding="utf-8")
 
