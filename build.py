@@ -32,6 +32,12 @@ PAGES = [
     "/enterprise",
     "/product",
     "/stories",
+    "/gpt-4",
+    "/dall-e-3",
+    "/brand",
+    "/policies/privacy-policy",
+    "/policies/usage-policies",
+    "/policies/terms-of-use",
 ]
 
 SKIP_TAGS = {"script", "style", "code", "pre", "noscript"}
@@ -45,14 +51,18 @@ docs.mkdir(exist_ok=True)
 downloaded = set()
 
 
-def fetch(url, binary=False):
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
-        r.raise_for_status()
-        return r.content if binary else r.text
-    except Exception as e:
-        print(f"  failed {url}: {e}")
-        return None
+def fetch(url, binary=False, retries=3):
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            r.raise_for_status()
+            return r.content if binary else r.text
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                print(f"  failed {url}: {e}")
+    return None
 
 
 def to_abs(url, base=None):
@@ -141,6 +151,7 @@ def download_js(path):
     dest.write_text(js, encoding="utf-8")
 
 
+
 LOCAL_PAGES = set(PAGES)
 
 
@@ -223,9 +234,9 @@ def fix_scripts(soup):
         content = tag.string or ""
         if "__NEXT_DATA__" in content:
             try:
-                match = re.search(r'=\s*(\{.+\})\s*$', content.strip(), re.DOTALL)
-                if match:
-                    data = json.loads(match.group(1))
+                m = re.search(r'=\s*(\{.+\})\s*$', content.strip(), re.DOTALL)
+                if m:
+                    data = json.loads(m.group(1))
                     data["assetPrefix"] = GH_DOMAIN + GH_BASE
                     tag.clear()
                     tag.append(f'self.__NEXT_DATA__={json.dumps(data)}')
@@ -241,6 +252,25 @@ def fix_page_links(soup):
             path = p.path.rstrip("/") or "/"
             if path in LOCAL_PAGES:
                 tag["href"] = local_abs("/" if path == "/" else path + "/")
+
+
+def remove_cookie_banner(soup):
+    selectors = [
+        "#onetrust-consent-sdk", "#onetrust-pc-dark-filter",
+        "#ot-sdk-btn-floating", ".onetrust-pc-dark-filter",
+    ]
+    for sel in selectors:
+        for tag in soup.select(sel):
+            tag.decompose()
+
+    head = soup.find("head")
+    if head:
+        style = soup.new_tag("style")
+        style.string = (
+            "[id*='onetrust'],[id*='cookie-banner'],[class*='CookieBanner'],"
+            "[class*='cookie-consent']{display:none!important}"
+        )
+        head.append(style)
 
 
 def add_base_tag(soup):
@@ -336,6 +366,7 @@ def build_page(path):
     fix_asset_links(soup)
     fix_inline_styles(soup)
     fix_page_links(soup)
+    remove_cookie_banner(soup)
     add_base_tag(soup)
     uwuify_tree(soup)
     inject_uwuify_js(soup)
