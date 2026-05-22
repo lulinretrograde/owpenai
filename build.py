@@ -36,7 +36,9 @@ docs.mkdir(exist_ok=True)
 
 
 def page_path(url_path):
-    clean = url_path.strip("/") or "index"
+    clean = url_path.strip("/")
+    if not clean:
+        return docs / "index.html"
     dest = docs / clean / "index.html"
     dest.parent.mkdir(parents=True, exist_ok=True)
     return dest
