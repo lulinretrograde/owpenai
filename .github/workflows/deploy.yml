@@ -1,10 +1,10 @@
-name: Build & Deploy
+name: build and deploy
 
 on:
   push:
     branches: [main]
   schedule:
-    - cron: "0 6 * * 1"  # every Monday 06:00 UTC — keeps content fresh
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -20,14 +20,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      - name: Build
-        run: python build.py
+      - run: python build.py
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs
