@@ -61,9 +61,9 @@ def rewrite_links(soup: BeautifulSoup, current_path: str) -> None:
         if parsed.netloc in ("", "openai.com", "www.openai.com"):
             path = parsed.path.rstrip("/") or "/"
             if path == "/":
-                tag["href"] = "/uwu-openai/"
+                tag["href"] = "/owpenai/"
             else:
-                tag["href"] = f"/uwu-openai{path}/"
+                tag["href"] = f"/owpenai{path}/"
         # leave external links as-is
 
 
