@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 
-import os
 import time
 import urllib.parse
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup
 
 from uwuify import uwuify
 
@@ -15,6 +14,7 @@ HEADERS = {
 }
 
 BASE = "https://openai.com"
+GH_BASE = "/owpenai"
 
 PAGES = [
     "/",
@@ -23,7 +23,6 @@ PAGES = [
     "/safety",
     "/blog",
     "/api",
-    "/chatgpt",
     "/sora",
     "/pricing",
     "/careers",
@@ -35,6 +34,16 @@ docs = Path("docs")
 docs.mkdir(exist_ok=True)
 
 
+def fetch(url):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        r.raise_for_status()
+        return r
+    except Exception as e:
+        print(f"  failed {url}: {e}")
+        return None
+
+
 def page_path(url_path):
     clean = url_path.strip("/")
     if not clean:
@@ -44,16 +53,38 @@ def page_path(url_path):
     return dest
 
 
-def fix_links(soup):
+def download_asset(path):
+    # strip query string for local filename
+    local_path = docs / path.lstrip("/").split("?")[0]
+    if local_path.exists():
+        return
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    r = fetch(BASE + path)
+    if r:
+        local_path.write_bytes(r.content)
+
+
+def fix_asset_links(soup):
+    for tag in soup.find_all("link", href=True):
+        href = tag["href"]
+        if href.startswith("/_next/"):
+            download_asset(href.split("?")[0])
+            tag["href"] = GH_BASE + href.split("?")[0]
+
+    for tag in soup.find_all(src=True):
+        src = tag["src"]
+        if src.startswith("/_next/"):
+            download_asset(src.split("?")[0])
+            tag["src"] = GH_BASE + src.split("?")[0]
+
+
+def fix_page_links(soup):
     for tag in soup.find_all("a", href=True):
         href = tag["href"]
         p = urllib.parse.urlparse(href)
         if p.netloc in ("", "openai.com", "www.openai.com"):
             path = p.path.rstrip("/") or "/"
-            if path == "/":
-                tag["href"] = "/owpenai/"
-            else:
-                tag["href"] = f"/owpenai{path}/"
+            tag["href"] = GH_BASE + ("/" if path == "/" else path + "/")
 
 
 def uwuify_tree(soup):
@@ -65,39 +96,20 @@ def uwuify_tree(soup):
         node.replace_with(uwuify(str(node)))
 
 
-def fetch(path):
-    try:
-        r = requests.get(BASE + path, headers=HEADERS, timeout=20)
-        r.raise_for_status()
-        return r.text
-    except Exception as e:
-        print(f"failed {path}: {e}")
-        return None
-
-
 def build_page(path):
     print(f"fetching {path}")
-    html = fetch(path)
-    if not html:
+    r = fetch(BASE + path)
+    if not r:
         return
 
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(r.text, "lxml")
 
     for tag in soup.find_all("script"):
         tag.decompose()
 
+    fix_asset_links(soup)
+    fix_page_links(soup)
     uwuify_tree(soup)
-    fix_links(soup)
-
-    banner = soup.new_tag("div", style=(
-        "position:fixed;bottom:16px;right:16px;background:#10a37f;"
-        "color:#fff;padding:8px 14px;border-radius:999px;"
-        "font-family:sans-serif;font-size:14px;z-index:99999;"
-        "box-shadow:0 2px 8px rgba(0,0,0,.3);"
-    ))
-    banner.string = "uwuified >w<"
-    if soup.body:
-        soup.body.append(banner)
 
     page_path(path).write_text(str(soup), encoding="utf-8")
 
@@ -106,4 +118,4 @@ for path in PAGES:
     build_page(path)
     time.sleep(1)
 
-print("done. run: python -m http.server --directory docs")
+print("done. run: python3 -m http.server --directory docs")
