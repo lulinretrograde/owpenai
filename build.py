@@ -125,13 +125,18 @@ def fix_asset_links(soup):
             tag["src"] = GH_BASE + local_web_path(to_abs(src))
 
 
+LOCAL_PAGES = set(PAGES)
+
 def fix_page_links(soup):
     for tag in soup.find_all("a", href=True):
         href = tag["href"]
         p = urllib.parse.urlparse(href)
         if p.netloc in ("", "openai.com", "www.openai.com"):
             path = p.path.rstrip("/") or "/"
-            tag["href"] = GH_BASE + ("/" if path == "/" else path + "/")
+            if path in LOCAL_PAGES:
+                tag["href"] = GH_BASE + ("/" if path == "/" else path + "/")
+            else:
+                tag["href"] = "https://openai.com" + path
 
 
 def uwuify_tree(soup):
